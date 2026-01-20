@@ -15,21 +15,9 @@ services:
       DIFY_HELM_GITHUB_TOKEN: ${DIFY_HELM_GITHUB_TOKEN}
       DIFY_ENTERPRISE_GITHUB_TOKEN: ${DIFY_ENTERPRISE_GITHUB_TOKEN}
       DIFY_ENTERPRISE_FRONTEND_GITHUB_TOKEN: ${DIFY_ENTERPRISE_FRONTEND_GITHUB_TOKEN}
+      HELM_MCP_HUMAN_IN_THE_LOOP_ENABLED: ${HELM_MCP_HUMAN_IN_THE_LOOP_ENABLED}
+      HELM_MCP_HUMAN_IN_THE_LOOP_TIMEOUT_SECONDS: ${HELM_MCP_HUMAN_IN_THE_LOOP_TIMEOUT_SECONDS}
+      HELM_MCP_TOOL_CALL_STORE_BACKEND: ${HELM_MCP_TOOL_CALL_STORE_BACKEND}
     volumes:
       - ./config:/app/config:ro
       - ./workspace:/app/workspace
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379"
-    volumes:
-      - redis-data:/data
-    command: redis-server --appendonly yes
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-volumes:
-  redis-data:

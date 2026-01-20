@@ -29,7 +29,7 @@ class ToolCallActionRequest(BaseModel):
 @router.get("/api/tool-calls")
 async def api_tool_calls(_: Annotated[str, Depends(verify_token)]) -> ToolCallResponse:
     """Get all tool calls."""
-    tool_calls = tool_call_service.list_tool_calls()
+    tool_calls = await tool_call_service.list_tool_calls()
     return ToolCallResponse(
         items=[
             ToolCallItem(
@@ -49,7 +49,7 @@ async def api_get_tool_call(
     _: Annotated[str, Depends(verify_token)],
 ) -> ToolCallItem:
     """Get a specific tool call."""
-    tool_call = tool_call_service.get_tool_call(tool_call_id)
+    tool_call = await tool_call_service.get_tool_call(tool_call_id)
     if tool_call is None:
         raise HTTPException(status_code=404, detail="Tool call not found")
     return ToolCallItem(
@@ -67,7 +67,7 @@ async def api_approve_tool_call(
 ) -> dict:
     """Approve a tool call."""
     try:
-        tool_call_service.approve_tool_call(tool_call_id)
+        await tool_call_service.approve_tool_call(tool_call_id)
         return {"success": True, "message": "Tool call approved"}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -80,7 +80,7 @@ async def api_reject_tool_call(
 ) -> dict:
     """Reject a tool call."""
     try:
-        tool_call_service.reject_tool_call(tool_call_id)
+        await tool_call_service.reject_tool_call(tool_call_id)
         return {"success": True, "message": "Tool call rejected"}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -92,5 +92,5 @@ async def api_delete_tool_call(
     _: Annotated[str, Depends(verify_token)],
 ) -> dict:
     """Delete a tool call."""
-    tool_call_service.delete_tool_call(tool_call_id)
+    await tool_call_service.delete_tool_call(tool_call_id)
     return {"success": True, "message": "Tool call deleted"}

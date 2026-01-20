@@ -1,15 +1,17 @@
-from typing import Literal
-from pydantic import BaseModel, Field
+from typing import Literal, Optional
+from pydantic import BaseModel, Field, TypeAdapter
 from fastmcp.tools import FunctionTool
-from helm_release_mcp.redis.client import TypedRedisClient
 from helm_release_mcp.settings import get_settings
 from functools import wraps
 from typing import Callable, Any
 from datetime import datetime, timedelta
 import uuid
 import asyncio
-
-REDIS_KEY_TOOL_CALLS = "dify_helm_mcp:tool_calls"
+from abc import ABC, abstractmethod
+from pathlib import Path
+import json
+import aiofiles
+import tempfile 
 
 
 class ToolCall(BaseModel):
@@ -20,38 +22,114 @@ class ToolCall(BaseModel):
     expires: datetime = Field(default_factory=lambda: datetime.now() + timedelta(seconds=120))
 
 
+class ToolCallStore(ABC):
+
+    _instance: Optional["ToolCallStore"] = None
+
+    @classmethod
+    def get_instance(cls) -> "ToolCallStore":
+        if cls._instance is not None:
+            return cls._instance
+        settings = get_settings()
+        if settings.tool_call_store_backend == "file":
+            cls._instance = FileBasedToolCallStore()
+        else:
+            raise ValueError(f"Unsupported tool call store backend: {settings.tool_call_store_backend}")
+
+    @abstractmethod
+    async def add_tool_call(self, tool_call: ToolCall) -> None:
+        pass
+    @abstractmethod
+    async def get_tool_call(self, tool_call_id: str) -> ToolCall | None:
+        pass
+    @abstractmethod
+    async def list_tool_calls(self) -> list[ToolCall]:
+        pass
+    @abstractmethod
+    async def update_tool_call(self, tool_call: ToolCall) -> None:
+        pass
+    @abstractmethod
+    async def delete_tool_call(self, tool_call_id: str) -> None:
+        pass
+
+class FileBasedToolCallStore(ToolCallStore):
+    def __init__(self, file_path: Path = Path(tempfile.gettempdir()) / "helm_mcp_tool_calls.json") -> None:
+        self.file_path = file_path
+        if not self.file_path.exists():
+            self.file_path.touch()
+        self._cache: list[ToolCall] | None = None
+        self._lock = asyncio.Lock()
+
+    async def _load(self) -> list[ToolCall]:
+        if self._cache:
+            return self._cache
+        async with aiofiles.open(self.file_path, "r") as f:
+            content = await f.read()
+            if not content or content == "null":
+                self._cache = []
+                return self._cache
+            self._cache = TypeAdapter(list[ToolCall]).validate_json(content)
+        return self._cache
+
+    async def _flush(self):
+        async with aiofiles.open(self.file_path, "wb") as f:
+            await f.write(TypeAdapter(list[ToolCall]).dump_json(self._cache))
+
+    async def add_tool_call(self, tool_call: ToolCall) -> None:
+        async with self._lock:
+            tool_calls = await self._load()
+            tool_calls.append(tool_call)
+            await self._flush()
+
+    async def get_tool_call(self, tool_call_id: str) -> ToolCall | None:
+        async with self._lock:
+            tool_calls = await self._load()
+            return next((tool_call for tool_call in tool_calls if tool_call.tool_call_id == tool_call_id), None)
+
+    async def list_tool_calls(self) -> list[ToolCall]:
+        async with self._lock:
+            return await self._load()
+
+    async def update_tool_call(self, tool_call: ToolCall) -> None:
+        tool_call_id = tool_call.tool_call_id
+        async with self._lock:
+            tool_calls = await self._load()
+            tool_calls = [tool_call for tool_call in tool_calls if tool_call.tool_call_id != tool_call_id]
+            tool_calls.append(tool_call)
+            await self._flush()
+
+    async def delete_tool_call(self, tool_call_id: str) -> None:
+        async with self._lock:
+            tool_calls = await self._load()
+            tool_calls = [tool_call for tool_call in tool_calls if tool_call.tool_call_id != tool_call_id]
+            self._cache = tool_calls
+            await self._flush()
+
 class ToolCallService:
     def __init__(self) -> None:
-        self.redis_client = TypedRedisClient()
+        self.tool_call_store = ToolCallStore.get_instance()
 
-    def add_tool_call(self, tool_call: ToolCall) -> None:
-        self.redis_client.hset(REDIS_KEY_TOOL_CALLS, tool_call.tool_call_id, tool_call)
+    async def add_tool_call(self, tool_call: ToolCall) -> None:
+        await self.tool_call_store.add_tool_call(tool_call)
 
-    def get_tool_call(self, tool_call_id: str) -> ToolCall | None:
-        return self.redis_client.hget(ToolCall, REDIS_KEY_TOOL_CALLS, tool_call_id)
+    async def get_tool_call(self, tool_call_id: str) -> ToolCall | None:
+        return await self.tool_call_store.get_tool_call(tool_call_id)
 
-    def list_tool_calls(self) -> list[ToolCall]:
-        return [
-            ToolCall.model_validate_json(value)
-            for value in self.redis_client.hgetall(REDIS_KEY_TOOL_CALLS)
-        ]
+    async def list_tool_calls(self) -> list[ToolCall]:
+        return await self.tool_call_store.list_tool_calls()
 
-    def approve_tool_call(self, tool_call_id: str) -> None:
-        tool_call = self.get_tool_call(tool_call_id)
-        if tool_call is None:
-            raise ValueError(f"Tool call {tool_call_id} not found")
+    async def approve_tool_call(self, tool_call_id: str) -> None:
+        tool_call = await self.get_tool_call(tool_call_id)
         tool_call.status = "approved"
-        self.redis_client.hset(REDIS_KEY_TOOL_CALLS, tool_call_id, tool_call)
+        await self.tool_call_store.update_tool_call(tool_call)
 
-    def reject_tool_call(self, tool_call_id: str) -> None:
-        tool_call = self.get_tool_call(tool_call_id)
-        if tool_call is None:
-            raise ValueError(f"Tool call {tool_call_id} not found")
+    async def reject_tool_call(self, tool_call_id: str) -> None:
+        tool_call = await self.get_tool_call(tool_call_id)
         tool_call.status = "rejected"
-        self.redis_client.hset(REDIS_KEY_TOOL_CALLS, tool_call_id, tool_call)
+        await self.tool_call_store.update_tool_call(tool_call)
 
-    def delete_tool_call(self, tool_call_id: str) -> None:
-        self.redis_client.hdel(REDIS_KEY_TOOL_CALLS, tool_call_id)
+    async def delete_tool_call(self, tool_call_id: str) -> None:
+        await self.tool_call_store.delete_tool_call(tool_call_id)
 
 
 class ToolCallApprovalError(Exception):
@@ -119,7 +197,7 @@ def aapprove_required() -> Callable:
                 status="pending",
                 expires=datetime.now() + timedelta(seconds=timeout_seconds),
             )
-            tool_call_service.add_tool_call(tool_call)
+            await tool_call_service.add_tool_call(tool_call)
 
             # Poll for approval/rejection/timeout
             start_time = datetime.now()
@@ -127,7 +205,7 @@ def aapprove_required() -> Callable:
                 # Check timeout
                 elapsed = (datetime.now() - start_time).total_seconds()
                 if elapsed >= timeout_seconds:
-                    tool_call_service.delete_tool_call(tool_call_id)
+                    await tool_call_service.delete_tool_call(tool_call_id)
                     raise ToolCallTimeoutError(
                         f"Tool call '{tool_name}' timed out after {timeout_seconds} seconds. "
                         f"Tool call ID: {tool_call_id}",
@@ -136,7 +214,7 @@ def aapprove_required() -> Callable:
                     )
 
                 # Check status
-                current_tool_call = tool_call_service.get_tool_call(tool_call_id)
+                current_tool_call = await tool_call_service.get_tool_call(tool_call_id)
                 if current_tool_call is None:
                     # Tool call was deleted (shouldn't happen, but handle gracefully)
                     raise ToolCallRejectedError(
@@ -147,12 +225,12 @@ def aapprove_required() -> Callable:
 
                 if current_tool_call.status == "approved":
                     # Clean up and proceed
-                    tool_call_service.delete_tool_call(tool_call_id)
+                    await tool_call_service.delete_tool_call(tool_call_id)
                     return await func(*args, **kwargs)
 
                 if current_tool_call.status == "rejected":
                     # Clean up and raise exception
-                    tool_call_service.delete_tool_call(tool_call_id)
+                    await tool_call_service.delete_tool_call(tool_call_id)
                     raise ToolCallRejectedError(
                         f"Tool call '{tool_name}' was rejected. Tool call ID: {tool_call_id}",
                         tool_call_id=tool_call_id,
