@@ -418,6 +418,7 @@ class GitHubService:
         workflow_file: str | None = None,
         branch: str | None = None,
         status: str | None = None,
+        head_sha: str | None = None,
         limit: int = 10,
     ) -> list[WorkflowRunInfo]:
         """List workflow runs.
@@ -427,6 +428,7 @@ class GitHubService:
             workflow_file: Filter by workflow file.
             branch: Filter by branch.
             status: Filter by status.
+            head_sha: Filter by head commit SHA.
             limit: Maximum number of runs to return.
 
         Returns:
@@ -440,6 +442,8 @@ class GitHubService:
                 kwargs["branch"] = branch
             if status:
                 kwargs["status"] = status
+            if head_sha:
+                kwargs["head_sha"] = head_sha
 
             if workflow_file:
                 workflow = repo.get_workflow(workflow_file)

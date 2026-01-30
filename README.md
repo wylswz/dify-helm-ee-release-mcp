@@ -180,7 +180,7 @@ For Claude Desktop, add to your MCP settings:
 
 - `check_workflow(repo, run_id)` - Check workflow run status
 - `wait_for_workflow(repo, run_id, timeout?, poll_interval?)` - Wait for workflow completion
-- `list_workflow_runs(repo, workflow_file?, branch?, status?, limit?)` - List recent workflow runs
+- `list_workflow_runs(repo, workflow_file?, branch?, tag?, status?, limit?)` - List recent workflow runs (requires branch or tag)
 
 
 ### Dify Enterprise Operations

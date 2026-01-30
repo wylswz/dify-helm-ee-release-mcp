@@ -451,6 +451,7 @@ def register_global_tools(mcp: FastMCP, registry: RepoRegistry) -> None:
         repo: str,
         workflow_file: str | None = None,
         branch: str | None = None,
+        tag: str | None = None,
         status: str | None = None,
         limit: int = 10,
     ) -> dict[str, Any]:
@@ -459,9 +460,15 @@ def register_global_tools(mcp: FastMCP, registry: RepoRegistry) -> None:
         Args:
             repo: Repository name.
             workflow_file: Filter by workflow file (e.g., "ci.yaml").
-            branch: Filter by branch.
-            status: Filter by status (queued, in_progress, completed).
+            branch: Filter by branch (mutually exclusive with tag).
+            tag: Filter by tag (mutually exclusive with branch).
+            status: Filter by status. Available values: queued, in_progress, completed,
+                    action_required, cancelled, failure, neutral, skipped, stale, success,
+                    timed_out, waiting, pending, requested.
             limit: Maximum runs to return (default: 10).
+
+        Note:
+            Either 'branch' or 'tag' must be provided. If both are provided, 'tag' takes priority.
         """
         repo_obj = registry.get_repo(repo)
         if not repo_obj:
@@ -470,12 +477,41 @@ def register_global_tools(mcp: FastMCP, registry: RepoRegistry) -> None:
                 "error": f"Repository not found: {repo}",
             }
 
+        if not branch and not tag:
+            return {
+                "success": False,
+                "error": "Either 'branch' or 'tag' must be provided",
+            }
+
+        head_sha = None
+        if tag:
+            try:
+                github_repo = repo_obj.github.get_repo(repo_obj.github_path)
+                normalized_tag = tag.replace("refs/tags/", "")
+                tag_ref = github_repo.get_git_ref(f"tags/{normalized_tag}")
+
+                # Annotated tags require dereferencing to reach the commit object
+                if tag_ref.object.type == "tag":
+                    git_tag = github_repo.get_git_tag(tag_ref.object.sha)
+                    head_sha = git_tag.object.sha
+                else:
+                    head_sha = tag_ref.object.sha
+
+                branch = None
+            except Exception as e:
+                logger.exception(f"Error resolving tag: {tag}")
+                return {
+                    "success": False,
+                    "error": f"Tag not found or invalid: {tag}. Error: {str(e)}",
+                }
+
         try:
             runs = registry.services.github.list_workflow_runs(
                 repo_obj.github_path,
                 workflow_file=workflow_file,
                 branch=branch,
                 status=status,
+                head_sha=head_sha,
                 limit=limit,
             )
 
